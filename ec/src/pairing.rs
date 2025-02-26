@@ -88,6 +88,14 @@ pub trait Pairing: Sized + 'static + Copy + Debug + Sync + Send + Eq {
         b: impl IntoIterator<Item = impl Into<Self::G2Prepared>>,
     ) -> MillerLoopOutput<Self>;
 
+    /// Computes the product of Miller loops for some number of (G1, G2) pairs, where the line functions are in affine mode
+    fn multi_miller_loop_affine(
+        a: impl IntoIterator<Item = impl Into<Self::G1Prepared>>,
+        b: impl IntoIterator<Item = impl Into<Self::G2Prepared>>,
+    ) -> MillerLoopOutput<Self> {
+        unimplemented!()
+    }
+
     /// Computes the Miller loop over `a` and `b`.
     fn miller_loop(
         a: impl Into<Self::G1Prepared>,
@@ -108,12 +116,28 @@ pub trait Pairing: Sized + 'static + Copy + Debug + Sync + Send + Eq {
         Self::final_exponentiation(Self::multi_miller_loop(a, b)).unwrap()
     }
 
+    /// Computes a "product" of pairings, where the line functions are in affine mode
+    fn multi_pairing_affine(
+        a: impl IntoIterator<Item = impl Into<Self::G1Prepared>>,
+        b: impl IntoIterator<Item = impl Into<Self::G2Prepared>>,
+    ) -> PairingOutput<Self> {
+        Self::final_exponentiation(Self::multi_miller_loop_affine(a, b)).unwrap()
+    }
+
     /// Performs multiple pairing operations
     fn pairing(
         p: impl Into<Self::G1Prepared>,
         q: impl Into<Self::G2Prepared>,
     ) -> PairingOutput<Self> {
         Self::multi_pairing([p], [q])
+    }
+
+    /// Performs multiple pairing operations, where the line functions are in affine mode
+    fn pairing_affine(
+        p: impl Into<Self::G1Prepared>,
+        q: impl Into<Self::G2Prepared>,
+    ) -> PairingOutput<Self> {
+        Self::multi_pairing_affine([p], [q])
     }
 }
 
@@ -165,7 +189,7 @@ impl<P: Pairing> CanonicalDeserialize for PairingOutput<P> {
         validate: Validate,
     ) -> Result<Self, SerializationError> {
         let f = P::TargetField::deserialize_with_mode(reader, compress, validate).map(Self)?;
-        if validate == Validate::Yes {
+        if let Validate::Yes = validate {
             f.check()?;
         }
         Ok(f)
@@ -333,10 +357,12 @@ impl<P: Pairing> Mul<P::ScalarField> for MillerLoopOutput<P> {
 
 /// Preprocesses a G1 element for use in a pairing.
 pub fn prepare_g1<E: Pairing>(g: impl Into<E::G1Affine>) -> E::G1Prepared {
-    E::G1Prepared::from(g.into())
+    let g: E::G1Affine = g.into();
+    E::G1Prepared::from(g)
 }
 
 /// Preprocesses a G2 element for use in a pairing.
 pub fn prepare_g2<E: Pairing>(g: impl Into<E::G2Affine>) -> E::G2Prepared {
-    E::G2Prepared::from(g.into())
+    let g: E::G2Affine = g.into();
+    E::G2Prepared::from(g)
 }
