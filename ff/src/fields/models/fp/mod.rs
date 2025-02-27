@@ -688,8 +688,12 @@ impl<P: FpConfig<N>, const N: usize> FromStr for Fp<P, N> {
 impl<P: FpConfig<N>, const N: usize> Display for Fp<P, N> {
     #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        let string = self.into_bigint().to_string();
-        write!(f, "{}", string.trim_start_matches('0'))
+        if self.is_zero() {
+            write!(f, "0")
+        } else {
+            let string = self.into_bigint().to_string();
+            write!(f, "{}", string.trim_start_matches('0'))
+        }
     }
 }
 
