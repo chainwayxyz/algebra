@@ -1,6 +1,6 @@
 use ark_ff::fields::{Field, Fp2};
-use ark_serialize::*;
-use ark_std::vec::Vec;
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
+use ark_std::vec::*;
 use num_traits::One;
 
 use crate::{
@@ -21,13 +21,13 @@ pub type G2Projective<P> = Projective<<P as BnConfig>::G2Config>;
     Eq(bound = "P: BnConfig")
 )]
 pub struct G2Prepared<P: BnConfig> {
-    // Stores the coefficients of the line evaluations as calculated in
-    // https://eprint.iacr.org/2013/722.pdf
+    /// Stores the coefficients of the line evaluations as calculated in
+    /// <https://eprint.iacr.org/2013/722.pdf>
     pub ell_coeffs: Vec<EllCoeff<P>>,
     pub infinity: bool,
 }
 
-pub(crate) type EllCoeff<P> = (
+pub type EllCoeff<P> = (
     Fp2<<P as BnConfig>::Fp2Config>,
     Fp2<<P as BnConfig>::Fp2Config>,
     Fp2<<P as BnConfig>::Fp2Config>,
@@ -39,14 +39,100 @@ pub(crate) type EllCoeff<P> = (
     Copy(bound = "P: BnConfig"),
     Debug(bound = "P: BnConfig")
 )]
-struct G2HomProjective<P: BnConfig> {
+pub struct G2HomProjective<P: BnConfig> {
     x: Fp2<P::Fp2Config>,
     y: Fp2<P::Fp2Config>,
     z: Fp2<P::Fp2Config>,
 }
 
+impl<P: BnConfig> G2Prepared<P> {
+    fn affine_double_in_place(t: &mut G2Affine<P>, three_div_two: &P::Fp) -> EllCoeff<P> {
+        //  for affine coordinates
+        //  slope: alpha = 3 * x^2 / 2 * y
+        let mut alpha = t.x.square();
+        alpha /= t.y;
+        alpha.mul_assign_by_fp(&three_div_two);
+        let bias = t.y - alpha * t.x;
+
+        // update T
+        // T.x = alpha^2 - 2 * t.x
+        // T.y = -bias - alpha * T.x
+        let tx = alpha.square() - t.x.double();
+        t.y = -bias - alpha * tx;
+        t.x = tx;
+
+        (Fp2::<P::Fp2Config>::ONE, alpha, -bias)
+    }
+
+    fn affine_add_in_place(t: &mut G2Affine<P>, q: &G2Affine<P>) -> EllCoeff<P> {
+        // alpha = (t.y - q.y) / (t.x - q.x)
+        // bias = t.y - alpha * t.x
+        let alpha = (t.y - q.y) / (t.x - q.x);
+        let bias = t.y - alpha * t.x;
+
+        // update T
+        // T.x = alpha^2 - t.x - q.x
+        // T.y = -bias - alpha * T.x
+        let tx = alpha.square() - t.x - q.x;
+        t.y = -bias - alpha * tx;
+        t.x = tx;
+
+        (Fp2::<P::Fp2Config>::ONE, alpha, -bias)
+    }
+
+    /// !!! this method cannot be used directly for users, so we need reuse the `from` trait already exists
+    fn from_affine(q: G2Affine<P>) -> Self {
+        if q.infinity {
+            G2Prepared {
+                ell_coeffs: vec![],
+                infinity: true,
+            }
+        } else {
+            // let two_inv = P::Fp::one().double().inverse().unwrap();
+            let two_inv = P::Fp::one().double().inverse().unwrap();
+            let three_div_two = (P::Fp::one().double() + P::Fp::one()) * two_inv;
+
+            let mut ell_coeffs = vec![];
+            let mut r = q.clone();
+
+            let neg_q = -q;
+
+            for bit in P::ATE_LOOP_COUNT.iter().rev().skip(1) {
+                ell_coeffs.push(Self::affine_double_in_place(&mut r, &three_div_two));
+
+                match bit {
+                    1 => ell_coeffs.push(Self::affine_add_in_place(&mut r, &q)),
+                    -1 => ell_coeffs.push(Self::affine_add_in_place(&mut r, &neg_q)),
+                    _ => continue,
+                }
+            }
+
+            let q1 = mul_by_char::<P>(q);
+            let mut q2 = mul_by_char::<P>(q1);
+
+            if P::X_IS_NEGATIVE {
+                r.y = -r.y;
+            }
+
+            q2.y = -q2.y;
+
+            ell_coeffs.push(Self::affine_add_in_place(&mut r, &q1));
+            ell_coeffs.push(Self::affine_add_in_place(&mut r, &q2));
+
+            Self {
+                ell_coeffs,
+                infinity: false,
+            }
+        }
+    }
+    
+    pub fn is_zero(&self) -> bool {
+        self.infinity
+    }
+}
+
 impl<P: BnConfig> G2HomProjective<P> {
-    fn double_in_place(&mut self, two_inv: &P::Fp) -> EllCoeff<P> {
+    pub fn double_in_place(&mut self, two_inv: &P::Fp) -> EllCoeff<P> {
         // Formula for line function when working with
         // homogeneous projective coordinates.
 
@@ -72,7 +158,7 @@ impl<P: BnConfig> G2HomProjective<P> {
         }
     }
 
-    fn add_in_place(&mut self, q: &G2Affine<P>) -> EllCoeff<P> {
+    pub fn add_in_place(&mut self, q: &G2Affine<P>) -> EllCoeff<P> {
         // Formula for line function when working with
         // homogeneous projective coordinates.
         let theta = self.y - &(q.y * &self.z);
@@ -101,8 +187,24 @@ impl<P: BnConfig> Default for G2Prepared<P> {
     }
 }
 
+/// !!! affine mode is for the purpose of verifying pairings
 impl<P: BnConfig> From<G2Affine<P>> for G2Prepared<P> {
     fn from(q: G2Affine<P>) -> Self {
+        if q.infinity {
+            G2Prepared {
+                ell_coeffs: vec![],
+                infinity: true,
+            }
+        } else {
+            Self::from_affine(q)
+        }
+    }
+}
+
+/// !!! projective mode is for the purpose of computing pairings
+impl<P: BnConfig> From<G2Projective<P>> for G2Prepared<P> {
+    fn from(q: G2Projective<P>) -> Self {
+        let q = q.into_affine();
         if q.infinity {
             G2Prepared {
                 ell_coeffs: vec![],
@@ -149,12 +251,6 @@ impl<P: BnConfig> From<G2Affine<P>> for G2Prepared<P> {
     }
 }
 
-impl<P: BnConfig> From<G2Projective<P>> for G2Prepared<P> {
-    fn from(q: G2Projective<P>) -> Self {
-        q.into_affine().into()
-    }
-}
-
 impl<'a, P: BnConfig> From<&'a G2Affine<P>> for G2Prepared<P> {
     fn from(other: &'a G2Affine<P>) -> Self {
         (*other).into()
@@ -163,13 +259,7 @@ impl<'a, P: BnConfig> From<&'a G2Affine<P>> for G2Prepared<P> {
 
 impl<'a, P: BnConfig> From<&'a G2Projective<P>> for G2Prepared<P> {
     fn from(q: &'a G2Projective<P>) -> Self {
-        q.into_affine().into()
-    }
-}
-
-impl<P: BnConfig> G2Prepared<P> {
-    pub fn is_zero(&self) -> bool {
-        self.infinity
+        (*q).into()
     }
 }
 
