@@ -547,7 +547,11 @@ impl<const N: usize> Debug for BigInt<N> {
 
 impl<const N: usize> Display for BigInt<N> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{}", BigUint::from(*self))
+        if self.is_zero() {
+            write!(f, "0")
+        } else {
+            write!(f, "{}", BigUint::from(*self))
+        }
     }
 }
 
